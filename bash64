@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# fully compatible with gnu base64 (afaik) 
+
+# omfg this would be so much better with a shell that doesn't strip NULs
+
+error () {
+  printf "%s: %s\n" "${BASH_SOURCE##*/}" "$1" >&2
+  exit 1
+}
+
+help () {
+  echo "\
+Usage: ${BASH_SOURCE##*/} [OPTION]... [FILE]
+Base64 encode or decode FILE, or standard input, to standard output.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -d  decode data
+  -i  when decoding, ignore non-alphabet characters
+  -w  wrap encoded lines after COLS character (default 76).
+        Use 0 to disable line wrapping
+  -h  display this help and exit
+  -v  output version information and exit
+
+With no FILE, or when FILE is -, read standard input.
+
+The data are encoded as described for the base64 alphabet in RFC 3548."
+}
+
+
+version () {
+  echo "\
+${BASH_SOURCE##*/} (bashutils) 0.1
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+Written by izabera with <3"
+}
+
+
+encode () {
+  [[ $1 = - ]] && set /dev/stdin
+  count=0
+  while :; do
+    # reading 1 char at a time because of \0
+    if ! read -rn1 -d '' var; then 
+      case $count in
+        1)
+           printf %s "${encode[ old << 4 ]}"
+           printf == ;;
+        2)
+           printf %s "${encode[ old << 2 ]}"
+           printf = ;;
+      esac
+      break
+    fi
+
+    # prints 0 if $var is empty (which happens to be correct)
+    printf -v num %d "'$var"
+
+    case $((count++)) in
+      0) 
+         printf %s "${encode[ num >> 2 ]}"
+         old=$((num % 4)) ;;
+
+      1) 
+         printf %s "${encode[ (num >> 4) + (old << 4) ]}"
+         old=$((num % 16)) ;;
+
+      2) 
+         printf %s "${encode[ (num >> 6) + (old << 2) ]}"
+         printf %s "${encode[ num % 64 ]}"
+         count=0 ;;
+    esac
+
+  done < "$1" |
+  if (( wrap > 0 )); then
+    while :; do
+      read -rN "$wrap"
+      if [[ $REPLY ]]; then
+        printf "%s\n" "$REPLY"
+      else
+        break
+      fi
+    done
+  else
+    cat
+  fi
+}
+
+
+decode () {
+  [[ $1 = - ]] && set /dev/stdin
+  count=0 equal=0 old= oct= cur=
+  while :; do
+    if ! read -rn1 -d '' var; then 
+      if (( count )); then
+        error "Invalid input"
+      else
+        exit 0
+      fi
+    fi
+
+    [[ $var = $'\n' ]] && continue
+    if [[ -z ${decode[${var:-_}]} ]]; then
+      if (( garbage )); then
+        continue
+      else
+        error "Invalid input"
+      fi
+    fi
+
+    if [[ $var = = ]]; then
+      (( equal ++ ))
+      if [[ count -eq 0 ]]; then
+        error "Invalid input"
+      fi
+    elif (( equal > 0 )); then
+      error "Invalid input"
+    fi
+
+    case $((count++)) in
+      0) 
+         old=${decode[$var]} ;;
+
+      1) 
+         cur=${decode[$var]}
+         printf -v oct %o "$(( ( old << 2 ) + ( cur >> 4 ) ))"
+         printf "\\$oct"
+         old=$(( cur % 16 ))
+         ;;
+
+      2) 
+         cur=${decode[$var]}
+         printf -v oct %o "$(( ( old << 4 ) + ( cur >> 2 ) ))"
+         printf "\\$oct"
+         old=$(( cur % 4 ))
+         ;;
+      3) 
+         cur=${decode[$var]}
+         printf -v oct %o "$(( ( old << 6 ) + cur ))"
+         printf "\\$oct"
+         count=0 old= ;;
+    esac
+
+  done < "$1"
+  [[ $old ]] && error "Invalid input"
+}
+
+
+action=encode wrap=76 garbage=0
+while getopts :dw:ihv opt; do
+  case $opt in
+    d) action=decode ;;
+    w) wrap=$OPTARG
+       if [[ $wrap = *[!0-9]* || $wrap = 0?* ]]; then
+         error "Invalid width: $wrap"
+       fi ;;
+    i) garbage=1 ;;
+    h) help
+       exit ;;
+    v) version
+       exit ;;
+    :) error "Missing argument for option -$OPTARG" ;;
+    *) error "Invalid option: -$OPTARG" ;;
+  esac
+done
+shift "$((OPTIND - 1))"
+
+
+LANG=C IFS= count=0
+encode=({A..Z} {a..z} {0..9} + /)
+declare -A decode=()
+elem=0
+for char in "${encode[@]}"; do
+  decode[$char]=$((elem++))
+done
+decode[=]=notempty
+
+"$action" "${1--}"
+
