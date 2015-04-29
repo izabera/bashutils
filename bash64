@@ -48,7 +48,7 @@ encode () {
       case $count in
         1)
            printf %s "${encode[ old << 4 ]}"
-           printf == ;;
+           printf "==" ;;
         2)
            printf %s "${encode[ old << 2 ]}"
            printf = ;;
@@ -92,6 +92,7 @@ encode () {
 
 decode () {
   [[ $1 = - ]] && set /dev/stdin
+  # shellcheck disable=SC1007
   count=0 equal=0 old= oct= cur=
   while :; do
     if ! read -rn1 -d '' var; then 
@@ -113,7 +114,7 @@ decode () {
 
     if [[ $var = = ]]; then
       (( equal ++ ))
-      if [[ count -eq 0 ]]; then
+      if (( ! count )); then
         error "Invalid input"
       fi
     elif (( equal > 0 )); then
@@ -127,20 +128,26 @@ decode () {
       1) 
          cur=${decode[$var]}
          printf -v oct %o "$(( ( old << 2 ) + ( cur >> 4 ) ))"
-         printf "\\$oct"
+         printf %b "\\$oct"
          old=$(( cur % 16 ))
          ;;
 
       2) 
          cur=${decode[$var]}
          printf -v oct %o "$(( ( old << 4 ) + ( cur >> 2 ) ))"
-         printf "\\$oct"
+         [[ $var != = ]] && printf %b "\\$oct"
          old=$(( cur % 4 ))
          ;;
       3) 
          cur=${decode[$var]}
          printf -v oct %o "$(( ( old << 6 ) + cur ))"
-         printf "\\$oct"
+         # in gnu base64 you can have = in the middle of a file
+         if [[ $var = = ]]; then
+           equal=0
+         else
+           printf %b "\\$oct"
+         fi
+         # shellcheck disable=SC1007
          count=0 old= ;;
     esac
 
@@ -155,7 +162,7 @@ while getopts :dw:ihv opt; do
     d) action=decode ;;
     w) wrap=$OPTARG
        if [[ $wrap = *[!0-9]* || $wrap = 0?* ]]; then
-         error "Invalid width: $wrap"
+         error "Invalid wrap size: $wrap"
        fi ;;
     i) garbage=1 ;;
     h) help
@@ -169,7 +176,8 @@ done
 shift "$((OPTIND - 1))"
 
 
-LANG=C IFS= count=0
+# shellcheck disable=SC2034
+LANG=C IFS= count=0 notempty=0
 encode=({A..Z} {a..z} {0..9} + /)
 declare -A decode=()
 elem=0
