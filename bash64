@@ -17,7 +17,7 @@ Base64 encode or decode FILE, or standard input, to standard output.
 Mandatory arguments to long options are mandatory for short options too.
   -d  decode data
   -i  when decoding, ignore non-alphabet characters
-  -w  wrap encoded lines after COLS character (default 76).
+  -w  wrap encoded lines after COLS characters (default 76).
         Use 0 to disable line wrapping
   -h  display this help and exit
   -v  output version information and exit
@@ -105,11 +105,11 @@ decode () {
 
     [[ $var = $'\n' ]] && continue
     if [[ -z ${decode[${var:-_}]} ]]; then
-      if (( garbage )); then
-        continue
-      else
+      #if (( garbage )); then
+        #continue
+      #else
         error "Invalid input"
-      fi
+      #fi
     fi
 
     if [[ $var = = ]]; then
@@ -152,7 +152,69 @@ decode () {
     esac
 
   done < "$1"
-  [[ $old ]] && error "Invalid input"
+  [[ -z $old ]] || error "Invalid input"
+}
+
+
+decode_buffer () {  # this version doesn't read 1 byte at a time
+  [[ $1 = - ]] && set /dev/stdin
+  # shellcheck disable=SC1007
+  count=0 equal=0 old= oct= cur=
+  while :; do
+    read -rN32 buffer
+    exitcode=$?
+    buffer=${buffer//[!${encode[*]}=]}
+    (( exitcode && ! ${#buffer} )) && break
+
+    # explode string to array
+    #eval eval buffer='\( "\"\${buffer:"'{0..$((${#buffer}-1))}':1}\" \)'
+    #for var in "${buffer[@]}"; do
+    len=${#buffer}
+    for (( i = 0; i < len; i++ )); do
+      var=${buffer:i:1}
+
+      if [[ $var = = ]]; then
+        (( equal ++ ))
+        if (( ! count )); then
+          error "Invalid input"
+        fi
+      elif (( equal > 0 )); then
+        error "Invalid input"
+      fi
+
+      case $((count++)) in
+        0)
+           old=${decode[$var]} ;;
+
+        1)
+           cur=${decode[$var]}
+           printf -v oct %o "$(( ( old << 2 ) + ( cur >> 4 ) ))"
+           printf %b "\\$oct"
+           old=$(( cur % 16 ))
+           ;;
+
+        2)
+           cur=${decode[$var]}
+           printf -v oct %o "$(( ( old << 4 ) + ( cur >> 2 ) ))"
+           [[ $var != = ]] && printf %b "\\$oct"
+           old=$(( cur % 4 ))
+           ;;
+        3)
+           cur=${decode[$var]}
+           printf -v oct %o "$(( ( old << 6 ) + cur ))"
+           # in gnu base64 you can have = in the middle of a file
+           if [[ $var = = ]]; then
+             equal=0
+           else
+             printf %b "\\$oct"
+           fi
+           # shellcheck disable=SC1007
+           count=0 old= ;;
+      esac
+
+    done
+  done < "$1"
+  [[ -z $old ]] || error "Invalid input"
 }
 
 
@@ -186,5 +248,9 @@ for char in "${encode[@]}"; do
 done
 decode[=]=notempty
 
-"$action" "${1--}"
+if [[ $action = decode && $garbage = 1 ]]; then
+  decode_buffer "${1--}"
+else
+  "$action" "${1--}"
+fi
 
