@@ -1,0 +1,148 @@
+#!/bin/bash -
+
+# avoid polluting the environment as much as possible:
+# - no functions (watch _can_ execute shell functions, if they're exported)
+# - as little variables as possible (exported variables must be kept)
+#   use the positional parameters insted of variables
+
+{ 
+  help () {
+    helptext='
+Usage:
+ watch [options] command
+
+Options:
+ -b                     beep if command has a non-zero exit
+ -c  (ignored)          interpret ANSI color and style sequences
+ -d                     highlight changes between updates
+ -e                     exit if command has a non-zero exit
+ -g                     exit when output from command changes
+ -n <secs>              seconds to wait between updates
+ -p                     attempt run command in precise intervals
+ -t                     turn off header
+ -x                     pass command to exec instead of "sh -c"
+
+ -h                     display this help and exit
+ -v                     output version information and exit'
+    if [[ $1 = stdout ]]; then
+      printf 'printf "%%s\\n" %q\nexit 0\0' "$helptext"
+      exit
+    else
+      printf '%s\n' "$helptext" >&2
+      printf 'exit 1\0'
+      exit
+    fi
+  }
+  version () {
+    verstext='watch from bashutils 0.1'
+    printf 'printf "%%s\\n" %q\nexit 0\0' "$verstext"
+    exit
+  }
+  # parse options in this side of the pipeline
+  # then read back
+  title=true beep=false color=false diff=false errexit=false
+  chgexit=false interval=2.0 precise=false exec=false
+  while getopts :thvegbcxdpn: opt; do
+    case $opt in
+      t) title=false ;;
+      h) help stdout ;;
+      #v) printf "%s: %s\n" "${BASH_SOURCE##*/}" "$OPTARG: not a number" >&2; printf 'exit 1\0'; exit ;;
+      e) errexit=true ;;
+      g) chgexit=true ;;
+      b) beep=true ;;
+      c) color=true ;;  # todo, don't strip anything for now
+      x) exec=true ;;
+      d) diff=true ;;
+      p) precise=true ;;
+      n) if printf -v interval %.1fs "$OPTARG" 2>/dev/null; then
+           [[ $interval = -* || $interval = 0.0s ]] && interval=0.1s
+         else
+           printf "%s: %s\n" "${BASH_SOURCE##*/}" "$OPTARG: invalid interval" >&2
+           # tell the other side to quit
+           printf 'exit 1\0'
+           # then suppress the rest of this side  (avoid polluting stdin)
+           exit
+         fi ;;
+      v) version ;;
+      :) printf "%s: %s\n" "${BASH_SOURCE##*/}" "Missing argument for option -$OPTARG" >&2
+         printf 'exit 1\0'
+         exit ;;
+      *) printf "%s: %s\n" "${BASH_SOURCE##*/}" "Invalid option: -$OPTARG" >&2
+         printf 'exit 1\0'
+         exit ;;
+    esac
+  done
+  shift "$((OPTIND - 1))"
+  (( $# )) || { help stderr ; }
+  # print the parameters
+  printf 'set '
+  printf '%q ' "$title"   "$beep"     "$color"   "$diff" "$errexit" \
+               "$chgexit" "$interval" "$precise" "$exec" "$@"
+  # put a NUL after the options are read to avoid consuming stdin in the other side
+  printf '\0'
+} | {
+  trap 'rm -f /tmp/swatch-{new,old}; tput rmcup' EXIT
+  # get parameters
+  eval "$(read -r -d ''; echo "$REPLY")"
+  tput smcup
+
+  # params:
+  #  $1 title       $2 beep
+  #  $3 color       $4 diff
+  #  $5 errexit     $6 chgexit
+  #  $7 interval    $8 precise
+  #  $9 exec        $10+ actual command
+
+  # at this point, the environment is still exactly the same as before
+  # the only vars that we cannot save are bash's internal variables:
+  # BASH, BASH_VERSION, BASH_VERSINFO, BASHPID, BASH_SOURCE, BASH_LINENO,
+  # BASH_SUBSHELL, IFS, PPID, SECONDS, SHELLOPTS, SHLVL
+  # can't do much about those
+  while :; do
+    tput clear
+    if [[ $1 = true ]]; then
+      (
+        # subshell for this part
+        col=${COLUMNS:-$(tput cols)}
+        printf -v date '%(%a %b %d %T %Y)T' -1 2> /dev/null ||
+          date=$(date "+%a %b %d %T %Y")
+        printf '%*s\r' "$col" "$date"
+        # 9  'Every s: '
+        # 25 'Day Mon NN HH:MM:SS YYYY'
+        # 3  '...'
+        cmd=${*:10}
+        if (( ${#cmd} >= col - ( ${#7} + 9 + 25) )); then
+          printf 'Every %ss: %s...\n\n' "$7" "${cmd:0:col - ( ${#7} + 9 + 25 + 3 )}"
+        else
+          printf 'Every %ss: %s\n\n' "$7" "${*:10}"
+        fi
+      )
+    fi
+
+    if [[ $9 = true ]]; then
+      ( exec -- "${10}" "${@:11}" )
+    else
+      sh -c "${*:10}"
+    fi
+
+    if [[ $? != 0 ]]; then
+      if [[ $5 = true ]]; then
+        read -N1 -p 'command exit with a non-zero status, press a key to exit' < /dev/tty
+        exit
+      fi
+      [[ $2 = true ]] && tput bel
+    fi
+
+    # todo: find a way to avoid these extra files
+    if [[ -r /tmp/swatch-new && -r /tmp/swatch-old ]]; then
+      if ! diff -q /tmp/swatch-{new,old} > /dev/null; then
+        [[ $6 = true ]] && exit
+        [[ $4 = true ]] && diff /tmp/swatch-{new,old}
+        # ok that's not exactly the same
+      fi
+      mv /tmp/swatch-{new,old}
+    fi
+
+    sleep "$7"
+  done
+}
