@@ -6,6 +6,7 @@
 #       - react upon resize
 #       - add actual useful functions
 
+(( $# )) && exec < "$1"
 [[ -t 1 ]] || { cat ; exit; }
 lines=$(tput lines) cols=$(tput cols) hl=$(tput rev) nohl=$(tput sgr0)
 cup=$(tput cup 0 0) el=$(tput el) ll=$(tput cup "$lines" 0)
@@ -14,6 +15,7 @@ cup=$(tput cup 0 0) el=$(tput el) ll=$(tput cup "$lines" 0)
 while read -rn "$cols"; do                        # at most $cols characters
   printf -v "input[i++]" "%-*s" "$cols" "$REPLY"  # fill with blanks
 done < <(cat -v | expand)                         # escape sequences are hard 
+[[ $REPLY ]] && printf -v "input[i++]" "%-*s" "$cols" "$REPLY"
 
 for (( j = lines; j > 1; j-- )) do
   printf -v "input[i++]" "~%*s" "$((cols-1))"     # classic
@@ -21,7 +23,7 @@ done
 
 trap "tput rmcup" exit
 tput smcup
-tot=$i i=0 IFS=
+tot=$i i=0 IFS= limit=$((tot-lines+1))
 
 search () {
   while (( $1 )); do
@@ -37,8 +39,8 @@ while :; do
   for (( j = i; j < i + lines - 1; j++ )) do
     printf "%s\n" "${input[j]//$search/$hl$search$nohl}"
   done
-  if (( err )); then err=0; printf "not found"
-  else printf %s "$el"
+  if (( err )); then err=0; printf "%snot found%s" "$hl$el" "$nohl"
+  else printf "%s%s (%s/%s)%s" "$hl$el" "${1-(stdin)}" "$((i+1))" "$limit" "$nohl"
   fi
   while read -rsN1 char; do
     case $char in                                         # copied from less
@@ -50,6 +52,10 @@ while :; do
              [$'uU\25']) (( i -= lines / 2 )); break;;    # u U ^U
                       G) (( i = tot ));        break;;
                       g) (( i = 0 ));          break;;
+                      :) printf %s "$ll$el"
+                         read -rep: j
+                         [[ $j != *[0-9]* ]] || (( i = j - 1 ))
+                         break ;;
                    [/?]) printf %s "$ll$el"
                          read -rep "$char" search
                          history -s -- "$search"  ;;&
