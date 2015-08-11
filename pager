@@ -1,0 +1,64 @@
+#!/bin/bash
+# very simple pager with search
+# TODO: - find a way to print while reading from stdin
+#       - print help message with h
+#       - handle escapes correctly
+#       - react upon resize
+#       - add actual useful functions
+
+[[ -t 1 ]] || { cat ; exit; }
+lines=$(tput lines) cols=$(tput cols) hl=$(tput rev) nohl=$(tput sgr0)
+cup=$(tput cup 0 0) el=$(tput el) ll=$(tput cup "$lines" 0)
+
+# slurp stdin first
+while read -rn "$cols"; do                        # at most $cols characters
+  printf -v "input[i++]" "%-*s" "$cols" "$REPLY"  # fill with blanks
+done < <(cat -v)                                  # escape sequences are hard 
+
+for (( j = lines; j > 1; j-- )) do
+  printf -v "input[i++]" "~%*s" "$((cols-1))"     # classic
+done
+
+trap "tput rmcup" exit
+tput smcup
+tot=$i i=0 IFS=
+
+search () {
+  while (( $1 )); do
+    if [[ ${input[j]} = *$search* ]]; then
+      i=$j err=0; break 2
+    fi
+  done
+  err=1; break
+}
+
+while :; do
+  printf %s "$cup"
+  for (( j = i; j < i + lines - 1; j++ )) do
+    printf "%s\n" "${input[j]//$search/$hl$search$nohl}"
+  done
+  if (( err )); then err=0; printf "not found"
+  else printf %s "$el"
+  fi
+  while read -rsN1 char; do
+    case $char in                                         # copied from less
+       [$'eE\5jJ\n\16']) (( i ++ ));           break;;    # e E ^E j J ^N CR
+      [$'yY\31kK\v\20']) (( i -- ));           break;;    # y Y ^Y k K ^K ^P
+          [$'fF\6\26 ']) (( i += lines ));     break;;    # f F ^F ^V SPACE
+              [$'bB\2']) (( i -= lines ));     break;;    # b B ^B
+              [$'dD\4']) (( i += lines / 2 )); break;;    # d D ^D
+             [$'uU\25']) (( i -= lines / 2 )); break;;    # u U ^U
+                      G) (( i = tot ));        break;;
+                      g) (( i = 0 ));          break;;
+                   [/?]) printf %s "$ll$el"
+                         read -rep "$char" search
+                         history -s -- "$search"  ;;&
+                      /) j=i-1 search "j++ < tot" ;;
+                     \?) j=i+1 search "j-- >= 0"  ;;
+                      n) j=i   search "j++ < tot" ;;
+                      N) j=i   search "j-- >= 0"  ;;
+                   [qQ]) exit
+    esac
+  done
+  (( i = i > tot - lines ? tot - lines : i < 0 ? 0 : i ))
+done < /dev/tty
