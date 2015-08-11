@@ -13,7 +13,7 @@ cup=$(tput cup 0 0) el=$(tput el) ll=$(tput cup "$lines" 0)
 # slurp stdin first
 while read -rn "$cols"; do                        # at most $cols characters
   printf -v "input[i++]" "%-*s" "$cols" "$REPLY"  # fill with blanks
-done < <(cat -v)                                  # escape sequences are hard 
+done < <(cat -v | expand)                         # escape sequences are hard 
 
 for (( j = lines; j > 1; j-- )) do
   printf -v "input[i++]" "~%*s" "$((cols-1))"     # classic
