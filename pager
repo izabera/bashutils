@@ -6,24 +6,34 @@
 #       - react upon resize
 #       - add actual useful functions
 
-(( $# )) && exec < "$1"
-[[ -t 1 ]] || { cat ; exit; }
 lines=$(tput lines) cols=$(tput cols) hl=$(tput rev) nohl=$(tput sgr0)
 cup=$(tput cup 0 0) el=$(tput el) ll=$(tput cup "$lines" 0)
 
-# slurp stdin first
-while read -rn "$cols"; do                        # at most $cols characters
-  printf -v "input[i++]" "%-*s" "$cols" "$REPLY"  # fill with blanks
-done < <(cat -v | expand)                         # escape sequences are hard 
-[[ $REPLY ]] && printf -v "input[i++]" "%-*s" "$cols" "$REPLY"
+format () {
+  if [[ $1 = - || $1 = /dev/stdin ]]; then exec <&3
+  else exec < "$1"
+  fi
+  [[ -t 1 ]] || { cat; continue; }
+  input=() i=0
+  while read -rn "$cols"; do                        # at most $cols characters
+    printf -v "input[i++]" "%-*s" "$cols" "$REPLY"  # fill with blanks
+  done < <(cat -v | expand)                         # escape sequences are hard
+  [[ $REPLY ]] && printf -v "input[i++]" "%-*s" "$cols" "$REPLY"
 
-for (( j = lines; j > 1; j-- )) do
-  printf -v "input[i++]" "~%*s" "$((cols-1))"     # classic
-done
+  for (( j = lines; j > 1; j-- )) do
+    printf -v "input[i++]" "~%*s" "$((cols-1))"     # classic
+  done
 
-trap "tput rmcup" exit
-tput smcup
-tot=$i i=0 IFS= limit=$((tot-lines+1))
+  tot=$i i=0 IFS= limit=$((tot-lines+1))
+}
+
+#trap 'lines=$(tput lines) cols=$(tput cols); format "${!arg}"' winch
+# stupid buggy bash segfaults
+if [[ -t 1 ]]; then
+  trap "tput rmcup" exit
+  tput smcup
+fi
+exec 3<&0
 
 search () {
   while (( $1 )); do
@@ -31,40 +41,57 @@ search () {
       i=$j err=0; break 2
     fi
   done
-  err=1; break
+  msg="not found" err=1; break
 }
 
-while :; do
-  printf %s "$cup"
-  for (( j = i; j < i + lines - 1; j++ )) do
-    printf "%s\n" "${input[j]//$search/$hl$search$nohl}"
-  done
-  if (( err )); then err=0; printf "%snot found%s" "$hl$el" "$nohl"
-  else printf "%s%s (%s/%s)%s" "$hl$el" "${1-(stdin)}" "$((i+1))" "$limit" "$nohl"
-  fi
-  while read -rsN1 char; do
-    case $char in                                         # copied from less
-       [$'eE\5jJ\n\16']) (( i ++ ));           break;;    # e E ^E j J ^N CR
-      [$'yY\31kK\v\20']) (( i -- ));           break;;    # y Y ^Y k K ^K ^P
-          [$'fF\6\26 ']) (( i += lines ));     break;;    # f F ^F ^V SPACE
-              [$'bB\2']) (( i -= lines ));     break;;    # b B ^B
-              [$'dD\4']) (( i += lines / 2 )); break;;    # d D ^D
-             [$'uU\25']) (( i -= lines / 2 )); break;;    # u U ^U
-                      G) (( i = tot ));        break;;
-                      g) (( i = 0 ));          break;;
-                      :) printf %s "$ll$el"
-                         read -rep: j
-                         [[ $j != *[0-9]* ]] || (( i = j - 1 ))
-                         break ;;
-                   [/?]) printf %s "$ll$el"
-                         read -rep "$char" search
-                         history -s -- "$search"  ;;&
-                      /) j=i-1 search "j++ < tot" ;;
-                     \?) j=i+1 search "j-- >= 0"  ;;
-                      n) j=i   search "j++ < tot" ;;
-                      N) j=i   search "j-- >= 0"  ;;
-                   [qQ]) exit
-    esac
-  done
-  (( i = i > tot - lines ? tot - lines : i < 0 ? 0 : i ))
-done < /dev/tty
+display () {
+  while :; do
+    printf %s "$cup"
+    for (( j = i; j < i + lines - 1; j++ )) do
+      printf "%s\n" "${input[j]//$search/$hl$search$nohl}"
+    done
+    if (( err )); then err=0; printf "%s%s%s" "$hl$el" "$msg" "$nohl"
+    else printf "%s%s (%s/%s)%s" "$hl$el" "$1" "$((i+1))" "$limit" "$nohl"
+    fi
+    while read -rsN1 char; do
+      case $char in                                         # copied from less
+         [$'eE\5jJ\n\16']) (( i ++ ));           break;;    # e E ^E j J ^N CR
+        [$'yY\31kK\v\20']) (( i -- ));           break;;    # y Y ^Y k K ^K ^P
+            [$'fF\6\26 ']) (( i += lines ));     break;;    # f F ^F ^V SPACE
+                [$'bB\2']) (( i -= lines ));     break;;    # b B ^B
+                [$'dD\4']) (( i += lines / 2 )); break;;    # d D ^D
+               [$'uU\25']) (( i -= lines / 2 )); break;;    # u U ^U
+                   ['>G']) (( i = tot ));        break;;
+                   ['<g']) (( i = 0 ));          break;;
+                        :) printf %s "$ll$el"
+                           read -rep: j
+                           case $j in
+                             n|ne|nex|next) return ;;
+                             p|pr|pre|prev) if ((arg > 1)); then
+                                              ((arg -= 2)); return
+                                            else
+                                              msg="no previous file" err=1
+                                            fi ;;
+                             *[!0-9]*) msg="unknown command" err=1 ;;
+                             *) (( i = j - 1 ))
+                           esac
+                           break ;;
+                     [/?]) printf %s "$ll$el"
+                           read -rep "$char" search
+                           history -s -- "$search"  ;;&
+                        /) j=i-1 search "j++ < tot" ;;
+                       \?) j=i+1 search "j-- >= 0"  ;;
+                        n) j=i   search "j++ < tot" ;;
+                        N) j=i   search "j-- >= 0"  ;;
+                     [qQ]) exit
+      esac
+    done
+    (( i = i > tot - lines ? tot - lines : i < 0 ? 0 : i ))
+  done < /dev/tty
+}
+
+(( $# )) || set -- -
+while (( arg ++ < $# )); do
+  format "${!arg}"
+  display "${!arg}"
+done
